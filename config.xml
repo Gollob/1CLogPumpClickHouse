@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration>
+    <!-- Путь к файлу logcfg.xml -->
+    <LogCfgPath>E:/go_project/logtest/logcfg.xml</LogCfgPath>
+
+    <!-- Маска лог-файлов -->
+    <FilePattern>*.log</FilePattern>
+
+    <!-- Настройки пакетной отправки -->
+    <BatchSize>100</BatchSize>
+    <FlushIntervalSec>60</FlushIntervalSec>
+
+    <!-- Конфигурация ClickHouse -->
+    <ClickHouse>
+        <Address>localhost:9000</Address>
+        <Username>admin</Username>
+        <Password>admin</Password>
+        <Database>logs_db</Database>
+        <Table>logs</Table>
+        <Protocol>native</Protocol>
+    </ClickHouse>
+</Configuration>

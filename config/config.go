@@ -1,0 +1,105 @@
+package config
+
+import (
+	"encoding/xml"
+	"os"
+	"path/filepath"
+)
+
+type ClickHouseConfig struct {
+	Address  string `xml:"Address"`
+	Username string `xml:"Username"`
+	Password string `xml:"Password"`
+	Database string `xml:"Database"`
+	Table    string `xml:"Table"`
+	Protocol string `xml:"Protocol"`
+}
+
+type Config struct {
+	XMLName          xml.Name         `xml:"Configuration"`
+	LogCfgPath       string           `xml:"LogCfgPath"`
+	FilePattern      string           `xml:"FilePattern"`
+	BatchSize        int              `xml:"BatchSize"`
+	FlushIntervalSec int              `xml:"FlushIntervalSec"`
+	ClickHouse       ClickHouseConfig `xml:"ClickHouse"`
+}
+
+type oneCLogCfg struct {
+	XMLName xml.Name     `xml:"config"`
+	Logs    []oneCLogRec `xml:"log"`
+}
+
+type oneCLogRec struct {
+	Location string         `xml:"location,attr"`
+	Events   []oneCLogEvent `xml:"event"`
+}
+
+type oneCLogEvent struct {
+	Eq *oneCLogEq `xml:"eq"`
+}
+
+type oneCLogEq struct {
+	Property string `xml:"property,attr"`
+	Value    string `xml:"value,attr"`
+}
+
+type LogFile struct {
+	Path  string
+	Event string
+}
+
+func (c Config) BatchInterval() int {
+	return c.FlushIntervalSec
+}
+
+func LoadConfig(path string) (Config, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return Config{}, err
+	}
+	defer f.Close()
+	var cfg Config
+	dec := xml.NewDecoder(f)
+	if err := dec.Decode(&cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// LoadLogFiles ищет ВСЕ .log файлы рекурсивно по папке и подпапкам для каждого event.
+func LoadLogFiles(path string) ([]LogFile, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var src oneCLogCfg
+	dec := xml.NewDecoder(f)
+	if err := dec.Decode(&src); err != nil {
+		return nil, err
+	}
+	var files []LogFile
+	for _, l := range src.Logs {
+		var logPaths []string
+		_ = filepath.Walk(l.Location, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if !info.IsDir() && filepath.Ext(path) == ".log" {
+				logPaths = append(logPaths, path)
+			}
+			return nil
+		})
+		for _, ev := range l.Events {
+			if ev.Eq != nil && ev.Eq.Property == "Name" {
+				for _, logPath := range logPaths {
+					files = append(files, LogFile{
+						Path:  logPath,
+						Event: ev.Eq.Value,
+					})
+				}
+			}
+		}
+	}
+	return files, nil
+}
