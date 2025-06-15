@@ -23,14 +23,14 @@ import (
 type Config struct {
 	Files      []config.LogFile
 	Logger     *zap.Logger
-	LogCfgPath string // добавлено поле для корректного reload
+	LogCfgPath string
 }
 
 type Watcher struct {
 	cfg       Config
 	batchCh   chan<- models.LogEntry
 	files     map[string]*tail.Tail
-	processed map[string]bool // уже обработанные файлы
+	processed map[string]bool
 	mu        sync.Mutex
 	ctx       context.Context
 }
@@ -71,14 +71,11 @@ func (w *Watcher) Start(ctx context.Context) {
 	if err != nil {
 		w.cfg.Logger.Error("Ошибка создания fsnotify для папок логов", zap.Error(err))
 	} else {
-		// Получаем список уникальных директорий из cfg.Files
 		dirs := make(map[string]struct{})
 		for _, lf := range w.cfg.Files {
 			dirs[filepath.Dir(lf.Path)] = struct{}{}
 		}
-		// Рекурсивно добавляем каталоги в watcher (аналогично filepath.Walk из config):contentReference[oaicite:1]{index=1}
 		for dir := range dirs {
-			// например, можно пройтись по подкаталогам:
 			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 				if err != nil || !info.IsDir() {
 					return nil
@@ -91,20 +88,16 @@ func (w *Watcher) Start(ctx context.Context) {
 		}
 		w.cfg.Logger.Info("Старт слежения за каталогами логов")
 
-		// Горутина обработки событий файловой системы
 		go func() {
 			for {
 				select {
 				case <-w.ctx.Done():
 					return
 				case event := <-dirWatcher.Events:
-					// Интересуют только *.log
 					if filepath.Ext(event.Name) == ".log" {
-						// Создание нового файла
 						if event.Op&fsnotify.Create == fsnotify.Create {
 							w.startTail(event.Name)
 						}
-						// Удаление или переименование (файл исчез)
 						if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
 							w.stopTail(event.Name)
 						}
@@ -124,11 +117,9 @@ func (w *Watcher) stopTail(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if t, ok := w.files[path]; ok {
-		// Останавливаем tail (остановка чтения, см. hpcloud/tail):contentReference[oaicite:4]{index=4}
 		t.Stop()
 		delete(w.files, path)
 		w.cfg.Logger.Info("Остановлен tail для файла", zap.String("file", path))
-		// Отмечаем файл как обработанный, чтобы избежать повторного разбора
 		w.markProcessed(path)
 	}
 }
@@ -136,7 +127,6 @@ func (w *Watcher) stopTail(path string) {
 func (w *Watcher) startTail(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// Если уже обработано, пропускаем
 	if w.processed[path] {
 		w.cfg.Logger.Info("Файл уже обработан, пропускаем", zap.String("file", path))
 		return
@@ -217,7 +207,6 @@ func isNewLogRecord(s string) bool {
 	return s[2] == ':' && s[5] == '.' && strings.Index(s, "-") > 0
 }
 
-// Теперь для watchLogCfg/reloadLogFiles используем путь из конфига
 func (w *Watcher) watchLogCfg() {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
