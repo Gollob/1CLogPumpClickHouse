@@ -13,10 +13,14 @@
     <!-- Конфигурация ClickHouse -->
     <ClickHouse>
         <Address>localhost:9000</Address>
+        <Protocol>native</Protocol>
         <Username>admin</Username>
         <Password>admin</Password>
         <Database>logs_db</Database>
-        <Table>logs</Table>
-        <Protocol>native</Protocol>
+        <DefaultTable>logs</DefaultTable>
+        <TableMap>
+           <Map Component="" Table=""/>
+            <!-- другие соответствия Component→Table -->
+        </TableMap>
     </ClickHouse>
 </Configuration>

@@ -36,11 +36,14 @@ type Watcher struct {
 }
 
 func New(cfg Config, batchCh chan<- models.LogEntry) *Watcher {
-	return &Watcher{
-		cfg:     cfg,
-		batchCh: batchCh,
-		files:   make(map[string]*tail.Tail),
+	w := &Watcher{
+		cfg:       cfg,
+		batchCh:   batchCh,
+		files:     make(map[string]*tail.Tail),
+		processed: make(map[string]bool),
 	}
+	w.loadProcessed("processed_files.json")
+	return w
 }
 
 // При инициализации читаем сохранённый список:
@@ -53,9 +56,21 @@ func (w *Watcher) loadProcessed(file string) {
 
 // Метод пометки и сохранения:
 func (w *Watcher) markProcessed(path string) {
-	w.processed[path] = true
-	data, _ := json.Marshal(w.processed)
-	os.WriteFile("processed_files.json", data, 0644)
+	// Сохраняем список обработанных файлов в файл processed_files.json в каталоге watcher
+	data, err := json.Marshal(w.processed)
+	if err != nil {
+		w.cfg.Logger.Error("Не удалось сериализовать processed map", zap.Error(err))
+		return
+	}
+	// Гарантируем запись atomарно: сначала во временный файл, затем переименование
+	tmpFile := "processed_files.json.tmp"
+	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
+		w.cfg.Logger.Error("Не удалось записать временный processed file", zap.Error(err))
+		return
+	}
+	if err := os.Rename(tmpFile, "processed_files.json"); err != nil {
+		w.cfg.Logger.Error("Не удалось переименовать tmp processed file", zap.Error(err))
+	}
 }
 func (w *Watcher) Start(ctx context.Context) {
 	w.ctx = ctx
@@ -164,6 +179,7 @@ func (w *Watcher) readTailLines(path string, t *tail.Tail) {
 			buffer = buffer[:0]
 			return
 		}
+		entry.Timestamp = filepath.Base(path)
 		w.batchCh <- entry
 		buffer = buffer[:0]
 	}

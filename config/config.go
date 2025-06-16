@@ -6,15 +6,19 @@ import (
 	"path/filepath"
 )
 
+// ClickHouseConfig содержит настройки подключения и маппинг таблиц по Component
+// Реализует UnmarshalXML для корректной загрузки map[string]string из XML
 type ClickHouseConfig struct {
-	Address  string `xml:"Address"`
-	Username string `xml:"Username"`
-	Password string `xml:"Password"`
-	Database string `xml:"Database"`
-	Table    string `xml:"Table"`
-	Protocol string `xml:"Protocol"`
+	Address      string // xml тег загружается через UnmarshalXML
+	Username     string
+	Password     string
+	Database     string
+	DefaultTable string
+	Protocol     string
+	TableMap     map[string]string // соответствие Component->Table
 }
 
+// Config описывает основные настройки сервиса
 type Config struct {
 	XMLName          xml.Name         `xml:"Configuration"`
 	LogCfgPath       string           `xml:"LogCfgPath"`
@@ -24,6 +28,19 @@ type Config struct {
 	ClickHouse       ClickHouseConfig `xml:"ClickHouse"`
 }
 
+// Промежуточная структура для разбора XML
+type chCfgXML struct {
+	Address      string `xml:"Address"`
+	Username     string `xml:"Username"`
+	Password     string `xml:"Password"`
+	Database     string `xml:"Database"`
+	DefaultTable string `xml:"DefaultTable"`
+	Protocol     string `xml:"Protocol"`
+	TableMaps    []struct {
+		Component string `xml:"Component,attr"`
+		Table     string `xml:"Table,attr"`
+	} `xml:"TableMap>Map"`
+}
 type oneCLogCfg struct {
 	XMLName xml.Name     `xml:"config"`
 	Logs    []oneCLogRec `xml:"log"`
@@ -102,4 +119,23 @@ func LoadLogFiles(path string) ([]LogFile, error) {
 		}
 	}
 	return files, nil
+}
+
+func (c *ClickHouseConfig) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	var aux chCfgXML
+	if err := d.DecodeElement(&aux, &start); err != nil {
+		return err
+	}
+	c.Address = aux.Address
+	c.Username = aux.Username
+	c.Password = aux.Password
+	c.Database = aux.Database
+	c.DefaultTable = aux.DefaultTable
+	c.Protocol = aux.Protocol
+	// Строим map из прочитанных элементов
+	c.TableMap = make(map[string]string, len(aux.TableMaps))
+	for _, m := range aux.TableMaps {
+		c.TableMap[m.Component] = m.Table
+	}
+	return nil
 }

@@ -1,33 +1,35 @@
 package clickhouseclient
 
 import (
-	"1CLogPumpClickHouse/config"
 	"context"
 	"fmt"
 	"time"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"go.uber.org/zap"
-
+	"1CLogPumpClickHouse/config"
 	"1CLogPumpClickHouse/models"
 	"1CLogPumpClickHouse/transform"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"go.uber.org/zap"
 )
 
 // Config — структура для подключения к ClickHouse
 // Protocol: "native" или "http"
 type Config struct {
-	Address  string
-	Username string
-	Password string
-	Database string
-	Table    string
-	Protocol string
+	Address      string
+	Username     string
+	Password     string
+	Database     string
+	DefaultTable string
+	Protocol     string
+	TableMap     map[string]string
 }
 
 type Client struct {
-	conn   clickhouse.Conn
-	Table  string
-	Logger *zap.Logger
+	conn         clickhouse.Conn
+	DefaultTable string
+	TableMap     map[string]string
+	Logger       *zap.Logger
 }
 
 // New создает клиента ClickHouse
@@ -51,52 +53,80 @@ func New(cfg config.ClickHouseConfig, logger *zap.Logger) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("clickhouse open: %w", err)
 	}
-	return &Client{conn: conn, Table: cfg.Table, Logger: logger}, nil
+	return &Client{
+		conn:         conn,
+		DefaultTable: cfg.DefaultTable,
+		TableMap:     cfg.TableMap,
+		Logger:       logger,
+	}, nil
 }
 
 // InsertTechLogBatch конвертирует LogEntry в TechLogRow через transform и отправляет в ClickHouse
 func (c *Client) InsertTechLogBatch(ctx context.Context, entries []models.LogEntry) error {
-	batch, err := c.conn.PrepareBatch(ctx,
-		"INSERT INTO "+c.Table+" ("+
-			"EventDate, EventTime, EventType, Duration, User, InfoBase, SessionID, ClientID, ConnectionID, ExceptionType, ErrorText, SQLText, Rows, RowsAffected, Context, ProcessName"+
-			") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-	if err != nil {
-		c.Logger.Error("prepare batch", zap.Error(err))
-		return fmt.Errorf("prepare batch: %w", err)
+	// Группируем записи по имени таблицы
+	grouped := make(map[string][]models.LogEntry)
+	for _, entry := range entries {
+		tableName := c.DefaultTable
+		if tbl, ok := c.TableMap[entry.Component]; ok {
+			tableName = tbl
+		}
+		grouped[tableName] = append(grouped[tableName], entry)
 	}
 
-	for _, entry := range entries {
-		row, err := transform.TransformLogEntry(entry)
+	// Отправляем отдельный батч для каждой таблицы
+	for tableName, group := range grouped {
+		// Используем отдельный контекст с таймаутом, чтобы отмена сервиса не прерывала операцию
+		dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		batch, err := c.conn.PrepareBatch(dbCtx,
+			"INSERT INTO "+tableName+" ("+
+				"EventDate, EventTime, EventType, Duration, User, InfoBase, SessionID, "+
+				"ClientID, ConnectionID, ExceptionType, ErrorText, SQLText, Rows, RowsAffected, Context, ProcessName"+
+				") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 		if err != nil {
-			c.Logger.Error("transform", zap.Error(err), zap.Any("entry", entry))
-			return fmt.Errorf("transform: %w", err)
+			c.Logger.Error("prepare batch", zap.Error(err), zap.String("table", tableName))
+			return fmt.Errorf("prepare batch: %w", err)
 		}
-		err = batch.Append(
-			row.EventDate,
-			row.EventTime,
-			row.EventType,
-			row.Duration,
-			row.User,
-			row.InfoBase,
-			row.SessionID,
-			row.ClientID,
-			row.ConnectionID,
-			row.ExceptionType,
-			row.ErrorText,
-			row.SQLText,
-			row.Rows,
-			row.RowsAffected,
-			row.Context,
-			row.ProcessName,
-		)
-		if err != nil {
-			c.Logger.Error("append batch", zap.Error(err), zap.Any("row", row))
-			return fmt.Errorf("append: %w", err)
+
+		for _, entry := range group {
+			row, err := transform.TransformLogEntry(entry)
+			if err != nil {
+				c.Logger.Error("transform", zap.Error(err), zap.Any("entry", entry))
+				return fmt.Errorf("transform: %w", err)
+			}
+			if err := batch.Append(
+				row.EventDate,
+				row.EventTime,
+				row.EventType,
+				row.Duration,
+				row.User,
+				row.InfoBase,
+				row.SessionID,
+				row.ClientID,
+				row.ConnectionID,
+				row.ExceptionType,
+				row.ErrorText,
+				row.SQLText,
+				row.Rows,
+				row.RowsAffected,
+				row.Context,
+				row.ProcessName,
+			); err != nil {
+				c.Logger.Error("append batch", zap.Error(err), zap.Any("row", row))
+				return fmt.Errorf("append: %w", err)
+			}
+		}
+
+		if err := batch.Send(); err != nil {
+			c.Logger.Error("send batch", zap.Error(err), zap.String("table", tableName))
+			return fmt.Errorf("send batch: %w", err)
 		}
 	}
-	return batch.Send()
+	return nil
 }
 
+// Close закрывает соединение с ClickHouse
 func (c *Client) Close() error {
 	return c.conn.Close()
 }

@@ -17,8 +17,15 @@ func TransformLogEntry(entry models.LogEntry) (models.TechLogRow, error) {
 	parsedDate := fmt.Sprintf("20%s-%s-%s", ts[0:2], ts[2:4], ts[4:6])
 
 	// Корректируем LogTimestamp, чтобы не было ошибки "hour out of range"
-	rawTime := strings.Split(entry.LogTimestamp, "-")[0] // например, "25:05.805096"
+	//rawTime := strings.Split(entry.LogTimestamp, "-")[0] // например, "00:03.310025"
+	//parts := strings.SplitN(rawTime, ":", 2)
+
+	rawLogTimestamp := strings.TrimPrefix(entry.LogTimestamp, "\uFEFF")
+	partsRaw := strings.Split(rawLogTimestamp, "-")
+
+	rawTime := partsRaw[0]
 	parts := strings.SplitN(rawTime, ":", 2)
+
 	if len(parts) != 2 {
 		return models.TechLogRow{}, fmt.Errorf("недопустимый log timestamp: %s", entry.LogTimestamp)
 	}
@@ -33,19 +40,25 @@ func TransformLogEntry(entry models.LogEntry) (models.TechLogRow, error) {
 	if hourInt > 23 {
 		hourInt = 23
 	}
-	fixedTime := fmt.Sprintf("%02d:%s", hourInt, minute)
+	eventTimeStr := fmt.Sprintf("%s %02d:%s", parsedDate, hourInt, minute)
 
-	timeStr := fmt.Sprintf("%s %s", parsedDate, fixedTime)
-	eventTime, err := time.Parse("2006-01-02 15:04.999999", timeStr)
+	eventTime, err := time.Parse("2006-01-02 15:04.999999", eventTimeStr)
 	if err != nil {
 		return models.TechLogRow{}, fmt.Errorf("failed to parse event time: %v", err)
 	}
+	parts2 := partsRaw
 
+	var duration uint32 = 0
+	if len(parts2) > 1 {
+		if val, err := strconv.ParseUint(parts2[1], 10, 32); err == nil {
+			duration = uint32(val)
+		}
+	}
 	return models.TechLogRow{
 		EventDate:     parsedDate,
 		EventTime:     eventTime.Format("2006-01-02 15:04:05.999999"),
-		EventType:     entry.EventType,
-		Duration:      0,
+		EventType:     entry.Component,
+		Duration:      duration, // теперь устанавливается из лога
 		User:          entry.User,
 		InfoBase:      entry.Database,
 		SessionID:     uint32(entry.SessionID),

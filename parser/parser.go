@@ -70,7 +70,7 @@ func parseSimpleHeader(headerRaw string) map[string]string {
 	res := make(map[string]string)
 	parts := strings.Split(headerRaw, ",")
 	if len(parts) > 0 {
-		res["Timestamp"] = strings.TrimSpace(parts[0])
+		res["LogTimestamp"] = strings.TrimSpace(parts[0])
 	}
 	if len(parts) > 1 {
 		res["Component"] = strings.TrimSpace(parts[1])
