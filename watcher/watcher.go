@@ -109,11 +109,28 @@ func (w *Watcher) Start(ctx context.Context) {
 				case <-w.ctx.Done():
 					return
 				case event := <-dirWatcher.Events:
+					if event.Op&fsnotify.Create == fsnotify.Create {
+						if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+							// добавляем новый каталог и все его подпапки
+							filepath.Walk(event.Name, func(path string, info os.FileInfo, err error) error {
+								if err != nil || !info.IsDir() {
+									return nil
+								}
+								if err := dirWatcher.Add(path); err != nil {
+									w.cfg.Logger.Error("Ошибка добавления каталога в watcher", zap.String("dir", path), zap.Error(err))
+								}
+								return nil
+							})
+							continue
+						}
+					}
 					if filepath.Ext(event.Name) == ".log" {
-						if event.Op&fsnotify.Create == fsnotify.Create {
+						// запускаем tail, если файл создан или в него впервые записали
+						if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0 {
 							w.startTail(event.Name)
 						}
-						if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+						// останавливаем tail, если файл удалён
+						if event.Op&(fsnotify.Remove) != 0 {
 							w.stopTail(event.Name)
 						}
 					}
