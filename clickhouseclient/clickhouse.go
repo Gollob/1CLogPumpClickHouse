@@ -77,7 +77,6 @@ func (c *Client) InsertTechLogBatch(ctx context.Context, entries []models.LogEnt
 	for tableName, group := range grouped {
 		// Используем отдельный контекст с таймаутом, чтобы отмена сервиса не прерывала операцию
 		dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
 
 		batch, err := c.conn.PrepareBatch(dbCtx,
 			"INSERT INTO "+tableName+" ("+
@@ -85,6 +84,7 @@ func (c *Client) InsertTechLogBatch(ctx context.Context, entries []models.LogEnt
 				"ClientID, ConnectionID, ExceptionType, ErrorText, SQLText, Rows, RowsAffected, Context, ProcessName"+
 				") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 		if err != nil {
+			cancel()
 			c.Logger.Error("prepare batch", zap.Error(err), zap.String("table", tableName))
 			return fmt.Errorf("prepare batch: %w", err)
 		}
@@ -113,12 +113,14 @@ func (c *Client) InsertTechLogBatch(ctx context.Context, entries []models.LogEnt
 				row.Context,
 				row.ProcessName,
 			); err != nil {
+				cancel()
 				c.Logger.Error("append batch", zap.Error(err), zap.Any("row", row))
 				return fmt.Errorf("append: %w", err)
 			}
 		}
 
 		if err := batch.Send(); err != nil {
+			cancel()
 			c.Logger.Error("send batch", zap.Error(err), zap.String("table", tableName))
 			return fmt.Errorf("send batch: %w", err)
 		}

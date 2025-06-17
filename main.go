@@ -4,8 +4,8 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
-	"time"
 
 	"go.uber.org/zap"
 
@@ -24,7 +24,8 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	lg := logger.InitZap()
+	rootLogger := logger.InitZap()
+	lg := rootLogger.Named("main")
 	defer lg.Sync()
 	lg.Info("Сервис 1CLogPump стартует…")
 
@@ -45,25 +46,32 @@ func main() {
 	}
 	lg.Info("logcfg.xml успешно загружен", zap.Int("count", len(logFiles)), zap.String("LogCfgPath", cfg.LogCfgPath))
 
-	ch, err := clickhouseclient.New(cfg.ClickHouse, lg)
+	clickhouseLogger := lg.Named("clickhouse")
+	chClient, err := clickhouseclient.New(cfg.ClickHouse, clickhouseLogger)
 	if err != nil {
 		lg.Fatal("Ошибка подключения к ClickHouse", zap.Error(err))
 	}
-	defer ch.Close()
+	defer chClient.Close()
 
 	batchCh := make(chan models.LogEntry, cfg.BatchSize*2)
 
 	// ВНИМАНИЕ! Передаём путь к logcfg.xml явно, чтобы watcher мог отслеживать именно этот файл
-	watcherCfg := watcher.Config{Files: logFiles, Logger: lg, LogCfgPath: cfg.LogCfgPath}
+	watcherLogger := lg.Named("watcher")
+	watcherCfg := watcher.Config{Files: logFiles, Logger: watcherLogger, LogCfgPath: cfg.LogCfgPath}
 	w := watcher.New(watcherCfg, batchCh)
-	go w.Start(ctx)
 
-	batcher := batch.NewBatcher(cfg.BatchSize, cfg.BatchInterval(), lg, ch)
-	go batcher.Run(ctx, batchCh)
+	batcherLogger := lg.Named("batcher")
+	batcher := batch.NewBatcher(cfg.BatchSize, cfg.BatchInterval(), batcherLogger, chClient)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); w.Start(ctx) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); batcher.Run(ctx, batchCh) }()
 
 	<-stop
-	lg.Info("Получен сигнал остановки, завершаем работу…")
+	lg.Info("Получен сигнал остановки, начинаем завершение работы")
 	cancel()
-	time.Sleep(3 * time.Second)
-	lg.Info("Сервис завершил работу.")
+	wg.Wait()
+	lg.Info("Сервис завершил работу")
 }

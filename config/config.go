@@ -22,7 +22,6 @@ type ClickHouseConfig struct {
 type Config struct {
 	XMLName          xml.Name         `xml:"Configuration"`
 	LogCfgPath       string           `xml:"LogCfgPath"`
-	FilePattern      string           `xml:"FilePattern"`
 	BatchSize        int              `xml:"BatchSize"`
 	FlushIntervalSec int              `xml:"FlushIntervalSec"`
 	ClickHouse       ClickHouseConfig `xml:"ClickHouse"`
