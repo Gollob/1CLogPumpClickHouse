@@ -18,34 +18,28 @@ import (
 )
 
 func main() {
+	// контекст для остановки
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// ловим сигналы завершения
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
+	// инициализируем логгер
 	rootLogger := logger.InitZap()
 	lg := rootLogger.Named("main")
 	defer lg.Sync()
 	lg.Info("Сервис 1CLogPump стартует…")
 
-	cfg, err := config.LoadConfig("config.xml")
+	// загружаем конфиг из YAML
+	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
-		lg.Fatal("Ошибка загрузки config.xml", zap.Error(err))
+		lg.Fatal("Ошибка загрузки config.yaml", zap.Error(err))
 	}
-	lg.Info("config.xml успешно загружен")
+	lg.Info("config.yaml успешно загружен")
 
-	// Проверка существования logcfg.xml
-	if _, err := os.Stat(cfg.LogCfgPath); err != nil {
-		lg.Fatal("Файл logcfg.xml не найден по пути", zap.String("LogCfgPath", cfg.LogCfgPath), zap.Error(err))
-	}
-
-	logFiles, err := config.LoadLogFiles(cfg.LogCfgPath)
-	if err != nil {
-		lg.Fatal("Ошибка загрузки logcfg.xml", zap.Error(err), zap.String("LogCfgPath", cfg.LogCfgPath))
-	}
-	lg.Info("logcfg.xml успешно загружен", zap.Int("count", len(logFiles)), zap.String("LogCfgPath", cfg.LogCfgPath))
-
+	// создаем клиента ClickHouse
 	clickhouseLogger := lg.Named("clickhouse")
 	chClient, err := clickhouseclient.New(cfg.ClickHouse, clickhouseLogger)
 	if err != nil {
@@ -53,22 +47,36 @@ func main() {
 	}
 	defer chClient.Close()
 
+	// канал для батчей
 	batchCh := make(chan models.LogEntry, cfg.BatchSize*2)
 
-	// ВНИМАНИЕ! Передаём путь к logcfg.xml явно, чтобы watcher мог отслеживать именно этот файл
+	// настраиваем watcher
 	watcherLogger := lg.Named("watcher")
-	watcherCfg := watcher.Config{Files: logFiles, Logger: watcherLogger, LogCfgPath: cfg.LogCfgPath}
+	watcherCfg := watcher.Config{
+		Config:     cfg,
+		ConfigPath: "config.yaml",
+		Logger:     watcherLogger,
+	}
 	w := watcher.New(watcherCfg, batchCh)
 
+	// настраиваем батчер
 	batcherLogger := lg.Named("batcher")
-	batcher := batch.NewBatcher(cfg.BatchSize, cfg.BatchInterval(), batcherLogger, chClient)
+	batcher := batch.NewBatcher(cfg.BatchSize, cfg.BatchInterval, batcherLogger, chClient)
 
+	// запускаем Watcher и Batcher
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { defer wg.Done(); w.Start(ctx) }()
+	go func() {
+		defer wg.Done()
+		w.Start(ctx)
+	}()
 	wg.Add(1)
-	go func() { defer wg.Done(); batcher.Run(ctx, batchCh) }()
+	go func() {
+		defer wg.Done()
+		batcher.Run(ctx, batchCh)
+	}()
 
+	// ожидаем сигнала остановки
 	<-stop
 	lg.Info("Получен сигнал остановки, начинаем завершение работы")
 	cancel()
