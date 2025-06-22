@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -105,6 +107,7 @@ func (w *Watcher) Start(ctx context.Context) {
 	w.ctx = ctx
 	go w.watchConfig()
 	w.scanInitialFiles()
+
 	dw, err := fsnotify.NewWatcher()
 	if err != nil {
 		w.cfg.Logger.Error("Ошибка создания watcher для каталогов", zap.Error(err))
@@ -120,41 +123,78 @@ func (w *Watcher) Start(ctx context.Context) {
 		w.cfg.Logger.Info("Старт слежения за каталогами логов")
 		go w.handleDirEvents(dw)
 	}
+
+	// Периодическое сохранение processed
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				w.saveProcessed()
+			}
+		}
+	}()
+
 	<-ctx.Done()
 	w.cfg.Logger.Info("Watcher остановлен по сигналу shutdown")
 	w.saveProcessed()
 }
 
+// --- Добавим регулярное выражение для определения начала новой лог-записи ---
+var logRecordRegex = regexp.MustCompile(`\d{2}:\d{2}\.\d{2,}.*-.*`)
+
+// isNewLogRecord определяет начало новой записи по регулярному выражению
+func isNewLogRecord(s string) bool {
+	return logRecordRegex.MatchString(s)
+}
+
 // scanInitialFiles: если processed пуст — первый запуск, сканируем все файлы; иначе — только последний
 func (w *Watcher) scanInitialFiles() {
-	pattern := w.cfg.Config.FilePattern
+	patternStr := w.cfg.Config.FilePattern
+	patternStr = strings.ReplaceAll(patternStr, ".", `\.`)
+	patternStr = strings.ReplaceAll(patternStr, "*", ".*")
+	patternStr = strings.ReplaceAll(patternStr, "?", ".")
+	pattern, err := regexp.Compile("^" + patternStr + "$")
+	if err != nil {
+		w.cfg.Logger.Error("Неверный FilePattern", zap.String("pattern", w.cfg.Config.FilePattern), zap.Error(err))
+		return
+	}
+
 	firstRun := len(w.processed) == 0
+
 	for _, dir := range w.cfg.Config.LogDirectoryMap {
-		if firstRun {
-			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil
-				}
-				if ok, _ := filepath.Match(pattern, filepath.Base(path)); ok {
-					w.startTail(path)
-				}
+		var files []os.FileInfo
+		var paths []string
+		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
 				return nil
-			})
-		} else {
-			var latest string
-			var mt time.Time
-			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil
-				}
-				if ok, _ := filepath.Match(pattern, filepath.Base(path)); ok && info.ModTime().After(mt) {
-					mt = info.ModTime()
-					latest = path
-				}
-				return nil
-			})
-			if latest != "" {
-				w.startTail(latest)
+			}
+			if pattern.MatchString(filepath.Base(path)) {
+				files = append(files, info)
+				paths = append(paths, path)
+			}
+			return nil
+		})
+		type fileWithTime struct {
+			Path string
+			Mod  time.Time
+		}
+		var sorted []fileWithTime
+		for i, fi := range files {
+			sorted = append(sorted, fileWithTime{Path: paths[i], Mod: fi.ModTime()})
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Mod.Before(sorted[j].Mod)
+		})
+		for _, f := range sorted {
+			if _, already := w.processed[f.Path]; !already || firstRun {
+				w.cfg.Logger.Info("Запускаем tail для", zap.String("file", f.Path))
+				w.startTail(f.Path)
+			} else {
+				w.cfg.Logger.Debug("Пропускаем ранее обработанный файл", zap.String("file", f.Path))
 			}
 		}
 	}
@@ -286,7 +326,6 @@ func (w *Watcher) readTail(path string, t *tail.Tail) {
 			return
 		}
 		entry.Timestamp = filepath.Base(path)
-		// Блокирующая отправка в канал, чтобы не терять записи
 		w.batchCh <- entry
 		off, err := t.Tell()
 		if err == nil {
@@ -307,10 +346,14 @@ func (w *Watcher) readTail(path string, t *tail.Tail) {
 				flushBuffer()
 				return
 			}
-			if isNewLogRecord(line.Text) {
+			clean := strings.ReplaceAll(line.Text, "\x00", "")
+			if strings.Contains(line.Text, "\x00") {
+				w.cfg.Logger.Warn("Обнаружены нулевые байты в строке", zap.String("file", path))
+			}
+			if isNewLogRecord(clean) {
 				flushBuffer()
 			}
-			buffer = append(buffer, line.Text)
+			buffer = append(buffer, clean)
 			resetTimer()
 		case <-func() <-chan time.Time {
 			if timer != nil {
@@ -321,12 +364,4 @@ func (w *Watcher) readTail(path string, t *tail.Tail) {
 			flushBuffer()
 		}
 	}
-}
-
-// isNewLogRecord определяет начало новой записи по шаблону времени и дефису
-func isNewLogRecord(s string) bool {
-	if len(s) < 10 {
-		return false
-	}
-	return s[2] == ':' && s[5] == '.' && strings.Contains(s, "-")
 }
