@@ -23,13 +23,10 @@ import (
 // Config — параметры watcher
 // ConfigPath — путь к config.yaml
 // Logger — zap логгер
-// Config — полная структура сервиса
-// Используем glob-паттерн для файлов по FilePattern
-// Обходим корневые директории и поддиректории
-// Динамически перечитываем конфиг при изменениях
-// Сохраняем processed_files.json в рабочей папке
-// Метаданные: последняя распарсенная строка для каждого файла
-// При инициализации обрабатываем только последний файл в каждой директории
+// Храним смещение (offset) последней прочитанной позиции для каждого файла
+
+// При первом запуске (processed файлы отсутствуют) сканируем все файлы
+// Далее — только последние файлы и продолжаем с сохранённых offset
 
 type Config struct {
 	Config     *config.Config
@@ -40,57 +37,74 @@ type Config struct {
 type Watcher struct {
 	cfg       Config
 	batchCh   chan<- models.LogEntry
-	files     map[string]*tail.Tail
-	processed map[string]string // path->last parsed line
-	mu        sync.Mutex
+	files     map[string]*tail.Tail // активные tail'ы
+	processed map[string]int64      // path -> смещение
+	mu        sync.RWMutex
 	ctx       context.Context
 }
 
-// New создаёт Watcher
+// New создаёт Watcher и загружает состояние processed из JSONL
 func New(cfg Config, batchCh chan<- models.LogEntry) *Watcher {
 	w := &Watcher{
 		cfg:       cfg,
 		batchCh:   batchCh,
 		files:     make(map[string]*tail.Tail),
-		processed: make(map[string]string),
+		processed: make(map[string]int64),
 	}
 	w.loadProcessed()
 	return w
 }
 
-// loadProcessed загружает processed metadata
+// loadProcessed загружает processed metadata из JSONL файла: по одной записи на строку
 func (w *Watcher) loadProcessed() {
-	data, err := os.ReadFile("processed_files.json")
-	if err == nil {
-		json.Unmarshal(data, &w.processed)
+	file, err := os.Open("processed_files.json")
+	if err != nil {
+		// Первый запуск или отсутствует файл
+		return
+	}
+	defer file.Close()
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var rec struct {
+			Path   string `json:"path"`
+			Offset int64  `json:"offset"`
+		}
+		err := json.Unmarshal(scanner.Bytes(), &rec)
+		if err == nil {
+			w.processed[rec.Path] = rec.Offset
+		}
 	}
 }
 
-// saveProcessed сохраняет processed metadata
+// saveProcessed сохраняет processed metadata в JSONL файл: по одной записи на строку
 func (w *Watcher) saveProcessed() {
-	data, err := json.Marshal(w.processed)
-	if err != nil {
-		w.cfg.Logger.Error("Не удалось сериализовать processed map", zap.Error(err))
-		return
-	}
 	tmp := "processed_files.json.tmp"
-	if err := os.WriteFile(tmp, data, 0644); err != nil {
-		w.cfg.Logger.Error("Не удалось записать временный processed file", zap.Error(err))
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		w.cfg.Logger.Error("Не удалось создать временный processed file", zap.Error(err))
 		return
 	}
+	encoder := json.NewEncoder(file)
+	w.mu.RLock()
+	for path, off := range w.processed {
+		rec := struct {
+			Path   string `json:"path"`
+			Offset int64  `json:"offset"`
+		}{Path: path, Offset: off}
+		if err := encoder.Encode(&rec); err != nil {
+			w.cfg.Logger.Error("Не удалось сериализовать запись processed", zap.String("path", path), zap.Error(err))
+		}
+	}
+	w.mu.RUnlock()
+	file.Close()
 	os.Rename(tmp, "processed_files.json")
 }
 
 // Start запускает Watcher
 func (w *Watcher) Start(ctx context.Context) {
 	w.ctx = ctx
-	// Следим за конфигом
 	go w.watchConfig()
-
-	// Первичная обработка: для каждого директория - только последний файл
 	w.scanInitialFiles()
-
-	// Слежение за директориями логов
 	dw, err := fsnotify.NewWatcher()
 	if err != nil {
 		w.cfg.Logger.Error("Ошибка создания watcher для каталогов", zap.Error(err))
@@ -106,31 +120,42 @@ func (w *Watcher) Start(ctx context.Context) {
 		w.cfg.Logger.Info("Старт слежения за каталогами логов")
 		go w.handleDirEvents(dw)
 	}
-
 	<-ctx.Done()
 	w.cfg.Logger.Info("Watcher остановлен по сигналу shutdown")
 	w.saveProcessed()
 }
 
-// scanInitialFiles обрабатывает только последний файл в каждой директории
+// scanInitialFiles: если processed пуст — первый запуск, сканируем все файлы; иначе — только последний
 func (w *Watcher) scanInitialFiles() {
 	pattern := w.cfg.Config.FilePattern
+	firstRun := len(w.processed) == 0
 	for _, dir := range w.cfg.Config.LogDirectoryMap {
-		var latest string
-		var mt time.Time
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
+		if firstRun {
+			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return nil
+				}
+				if ok, _ := filepath.Match(pattern, filepath.Base(path)); ok {
+					w.startTail(path)
+				}
 				return nil
+			})
+		} else {
+			var latest string
+			var mt time.Time
+			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return nil
+				}
+				if ok, _ := filepath.Match(pattern, filepath.Base(path)); ok && info.ModTime().After(mt) {
+					mt = info.ModTime()
+					latest = path
+				}
+				return nil
+			})
+			if latest != "" {
+				w.startTail(latest)
 			}
-			match, _ := filepath.Match(pattern, filepath.Base(path))
-			if match && info.ModTime().After(mt) {
-				mt = info.ModTime()
-				latest = path
-			}
-			return nil
-		})
-		if latest != "" {
-			w.startTail(latest)
 		}
 	}
 }
@@ -144,13 +169,12 @@ func (w *Watcher) watchConfig() {
 	}
 	defer watcher.Close()
 	watcher.Add(w.cfg.ConfigPath)
-	w.cfg.Logger.Info("Старт слежения за config.yaml", zap.String("path", w.cfg.ConfigPath))
 	for {
 		select {
 		case <-w.ctx.Done():
 			return
 		case ev := <-watcher.Events:
-			if ev.Op&fsnotify.Write != 0 || ev.Op&fsnotify.Create != 0 {
+			if ev.Op&(fsnotify.Write|fsnotify.Create) != 0 {
 				w.cfg.Logger.Info("Конфиг изменился, перечитываем", zap.String("path", w.cfg.ConfigPath))
 				newCfg, err := config.LoadConfig(w.cfg.ConfigPath)
 				if err != nil {
@@ -171,7 +195,6 @@ func (w *Watcher) watchConfig() {
 func (w *Watcher) handleDirEvents(dw *fsnotify.Watcher) {
 	for {
 		select {
-
 		case <-w.ctx.Done():
 			return
 		case ev := <-dw.Events:
@@ -186,13 +209,13 @@ func (w *Watcher) handleDirEvents(dw *fsnotify.Watcher) {
 					})
 					continue
 				}
-				if filepath.Ext(ev.Name) == ".log" {
-					if ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0 {
-						w.startTail(ev.Name)
-					}
-					if ev.Op&fsnotify.Remove != 0 {
-						w.stopTail(ev.Name)
-					}
+			}
+			if filepath.Ext(ev.Name) == ".log" {
+				if ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0 {
+					w.startTail(ev.Name)
+				}
+				if ev.Op&fsnotify.Remove != 0 {
+					w.stopTail(ev.Name)
 				}
 			}
 		case err := <-dw.Errors:
@@ -201,45 +224,20 @@ func (w *Watcher) handleDirEvents(dw *fsnotify.Watcher) {
 	}
 }
 
-// startTail запускает tail для файла
+// startTail запускает tail для файла, начиная с сохранённого смещения
 func (w *Watcher) startTail(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if _, ok := w.files[path]; ok {
+	if _, exists := w.files[path]; exists {
 		return
 	}
-
-	// Определяем смещение для tail, пропуская строки до последней обработанной
 	var loc tail.SeekInfo
-	if last, ok := w.processed[path]; ok {
-		file, err := os.Open(path)
-		if err != nil {
-			loc = tail.SeekInfo{Offset: 0, Whence: io.SeekStart}
-		} else {
-			scanner := bufio.NewScanner(file)
-			var offset int64
-			for scanner.Scan() {
-				if scanner.Text() == last {
-					pos, err := file.Seek(0, io.SeekCurrent)
-					if err == nil {
-						offset = pos
-					}
-					break
-				}
-			}
-			file.Close()
-			loc = tail.SeekInfo{Offset: offset, Whence: io.SeekStart}
-		}
+	if offset, ok := w.processed[path]; ok {
+		loc = tail.SeekInfo{Offset: offset, Whence: io.SeekStart}
 	} else {
 		loc = tail.SeekInfo{Offset: 0, Whence: io.SeekStart}
 	}
-
-	t, err := tail.TailFile(path, tail.Config{
-		Follow:    true,
-		ReOpen:    true,
-		MustExist: false,
-		Location:  &loc,
-	})
+	t, err := tail.TailFile(path, tail.Config{Follow: true, ReOpen: true, MustExist: false, Location: &loc, Logger: tail.DiscardingLogger})
 	if err != nil {
 		w.cfg.Logger.Error("Ошибка открытия tail", zap.String("file", path), zap.Error(err))
 		return
@@ -260,11 +258,24 @@ func (w *Watcher) stopTail(path string) {
 	}
 }
 
-// readTail читает линии и пачки отправляет в batchCh
+// readTail читает строки, парсит записи и обновляет offset
 func (w *Watcher) readTail(path string, t *tail.Tail) {
+	defer func() {
+		if r := recover(); r != nil {
+			w.cfg.Logger.Error("Паника в readTail восстановлена", zap.Any("error", r))
+		}
+	}()
 	var buffer []string
 	var timer *time.Timer
-	flush := func() {
+
+	resetTimer := func() {
+		if timer != nil {
+			timer.Stop()
+		}
+		timer = time.NewTimer(2 * time.Second)
+	}
+
+	flushBuffer := func() {
 		if len(buffer) == 0 {
 			return
 		}
@@ -275,48 +286,47 @@ func (w *Watcher) readTail(path string, t *tail.Tail) {
 			return
 		}
 		entry.Timestamp = filepath.Base(path)
+		// Блокирующая отправка в канал, чтобы не терять записи
 		w.batchCh <- entry
-		w.mu.Lock()
-		w.processed[path] = buffer[len(buffer)-1]
-		w.mu.Unlock()
+		off, err := t.Tell()
+		if err == nil {
+			w.mu.Lock()
+			w.processed[path] = off
+			w.mu.Unlock()
+		}
 		buffer = buffer[:0]
 	}
-	reset := func() {
-		if timer != nil {
-			timer.Stop()
-		}
-		timer = time.NewTimer(2 * time.Second)
-	}
+
 	for {
 		select {
 		case <-w.ctx.Done():
-			flush()
+			flushBuffer()
 			return
 		case line, ok := <-t.Lines:
 			if !ok {
-				flush()
+				flushBuffer()
 				return
 			}
 			if isNewLogRecord(line.Text) {
-				flush()
+				flushBuffer()
 			}
 			buffer = append(buffer, line.Text)
-			reset()
+			resetTimer()
 		case <-func() <-chan time.Time {
 			if timer != nil {
 				return timer.C
 			}
 			return make(chan time.Time)
 		}():
-			flush()
+			flushBuffer()
 		}
 	}
 }
 
-// isNewLogRecord определяет начало записи
+// isNewLogRecord определяет начало новой записи по шаблону времени и дефису
 func isNewLogRecord(s string) bool {
 	if len(s) < 10 {
 		return false
 	}
-	return s[2] == ':' && s[5] == '.' && strings.Index(s, "-") > 0
+	return s[2] == ':' && s[5] == '.' && strings.Contains(s, "-")
 }
