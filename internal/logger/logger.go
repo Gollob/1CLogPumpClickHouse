@@ -1,12 +1,12 @@
 package logger
 
 import (
+	"1CLogPumpClickHouse/internal/config"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
-	"1CLogPumpClickHouse/config"
 	"github.com/getsentry/sentry-go"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"

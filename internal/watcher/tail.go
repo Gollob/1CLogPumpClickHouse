@@ -1,7 +1,7 @@
 package watcher
 
 import (
-	"1CLogPumpClickHouse/parser"
+	"1CLogPumpClickHouse/internal/parser"
 	"io"
 	"path/filepath"
 	"strings"

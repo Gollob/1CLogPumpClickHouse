@@ -1,11 +1,10 @@
 package parser
 
 import (
+	"1CLogPumpClickHouse/internal/models"
 	"strconv"
 	"strings"
 	"time"
-
-	"1CLogPumpClickHouse/models"
 )
 
 // ParseLine парсит одну или несколько строк лога 1С в LogEntry.

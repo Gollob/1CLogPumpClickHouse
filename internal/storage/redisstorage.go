@@ -1,10 +1,11 @@
 package storage
 
 import (
-	"1CLogPumpClickHouse/config"
+	"1CLogPumpClickHouse/internal/config"
 	"context"
 	"fmt"
 	"github.com/redis/go-redis/v9"
+	"time"
 )
 
 type RedisStore struct {
@@ -12,16 +13,21 @@ type RedisStore struct {
 	key    string
 }
 
-func NewRedisStore(cfg *config.RedisConfig, key string) *RedisStore {
+func NewRedisStore(cfg *config.RedisConfig, key string) (*RedisStore, error) {
+	// Создаём клиента Redis
 	rdb := redis.NewClient(&redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Password: cfg.Password,
-		DB:       int(cfg.DB),
+		DB:       cfg.DB,
 	})
-	return &RedisStore{
-		client: rdb,
-		key:    key,
+	// Проверяем подключение с тайм-аутом
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		// Соединение не установлено - возвращаем ошибку
+		return nil, fmt.Errorf("не удалось подключиться к Redis: %w", err)
 	}
+	return &RedisStore{client: rdb, key: key}, nil
 }
 
 func (r *RedisStore) Load() (map[string]int64, error) {

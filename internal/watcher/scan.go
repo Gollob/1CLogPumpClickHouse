@@ -1,7 +1,7 @@
 package watcher
 
 import (
-	"1CLogPumpClickHouse/config"
+	"1CLogPumpClickHouse/internal/config"
 	"github.com/fsnotify/fsnotify"
 	"go.uber.org/zap"
 	"os"
@@ -32,7 +32,9 @@ func (w *Watcher) scanInitialFiles() {
 		return
 	}
 
+	w.mu.RLock()
 	firstRun := len(w.processed) == 0
+	w.mu.RUnlock()
 
 	for _, dir := range w.cfg.Config.LogDirectoryMap {
 		var files []os.FileInfo
@@ -59,7 +61,10 @@ func (w *Watcher) scanInitialFiles() {
 			return sorted[i].Mod.Before(sorted[j].Mod)
 		})
 		for _, f := range sorted {
-			if _, already := w.processed[f.Path]; !already || firstRun {
+			w.mu.RLock()
+			_, already := w.processed[f.Path]
+			w.mu.RUnlock()
+			if !already || firstRun {
 				w.cfg.Logger.Info("Запускаем tail для", zap.String("file", f.Path))
 				w.startTail(f.Path)
 			} else {
@@ -102,6 +107,17 @@ func (w *Watcher) watchConfig() {
 
 // handleDirEvents обрабатывает fsnotify события в папках
 func (w *Watcher) handleDirEvents(dw *fsnotify.Watcher) {
+	// Компилируем шаблон имен файлов один раз
+	patternStr := w.cfg.Config.FilePattern
+	patternStr = strings.ReplaceAll(patternStr, ".", `\.`)
+	patternStr = strings.ReplaceAll(patternStr, "*", ".*")
+	patternStr = strings.ReplaceAll(patternStr, "?", ".")
+	filePattern, err := regexp.Compile("^" + patternStr + "$")
+	if err != nil {
+		w.cfg.Logger.Error("Неверный FilePattern в конфиге", zap.String("pattern", w.cfg.Config.FilePattern), zap.Error(err))
+		// Если шаблон сломан, пропускаем сканирование файлов
+	}
+
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -111,13 +127,20 @@ func (w *Watcher) handleDirEvents(dw *fsnotify.Watcher) {
 				info, err := os.Stat(ev.Name)
 				if err == nil && info.IsDir() {
 					filepath.Walk(ev.Name, func(p string, i os.FileInfo, e error) error {
-						if e == nil && i.IsDir() {
+						if e != nil {
+							return nil
+						}
+						if i.IsDir() {
 							dw.Add(p)
+							w.cfg.Logger.Info("Добавлен watcher для директории", zap.String("dir", p))
+						} else if filePattern != nil && filePattern.MatchString(filepath.Base(p)) {
+							w.cfg.Logger.Info("Найден файл в новой папке, запускаем tail", zap.String("file", p))
+							w.startTail(p)
 						}
 						return nil
 					})
-					continue
 				}
+				continue
 			}
 			if filepath.Ext(ev.Name) == ".log" {
 				if ev.Op&(fsnotify.Create|fsnotify.Rename) != 0 {

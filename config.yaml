@@ -8,7 +8,7 @@ FilePattern: "*.log"
 
 # Настройки пакетной отправки
 BatchSize: 100
-BatchInterval: 60
+BatchInterval: 20
 
 # Конфигурация ClickHouse
 ClickHouse:
@@ -30,6 +30,6 @@ Redis:                          # параметры подключения к R
 	Password: ""                   # если требуется пароль
 
 Logging:                        # настройки логирования
-	LogFile: "error.log"
+	LogFile: "temp/error.log"
 	SentryDSN: ""
 	EnableSentry: true

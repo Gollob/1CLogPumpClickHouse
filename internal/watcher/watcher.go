@@ -1,7 +1,9 @@
 package watcher
 
 import (
-	"1CLogPumpClickHouse/storage"
+	"1CLogPumpClickHouse/internal/config"
+	"1CLogPumpClickHouse/internal/models"
+	"1CLogPumpClickHouse/internal/storage"
 	"context"
 	"os"
 	"path/filepath"
@@ -11,9 +13,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/hpcloud/tail"
 	"go.uber.org/zap"
-
-	"1CLogPumpClickHouse/config"
-	"1CLogPumpClickHouse/models"
 )
 
 // Config — параметры watcher
@@ -32,13 +31,14 @@ type Config struct {
 }
 
 type Watcher struct {
-	cfg       Config
-	store     storage.ProcessedStore
-	batchCh   chan<- models.LogEntry
-	files     map[string]*tail.Tail // активные tail'ы
-	processed map[string]int64      // path -> смещение
-	mu        sync.RWMutex
-	ctx       context.Context
+	cfg        Config
+	store      storage.ProcessedStore
+	batchCh    chan<- models.LogEntry
+	files      map[string]*tail.Tail // активные tail'ы
+	processed  map[string]int64      // path -> смещение
+	mu         sync.RWMutex
+	ctx        context.Context
+	dirWatcher *fsnotify.Watcher
 }
 
 // New создаёт Watcher и загружает состояние processed из JSONL
@@ -64,11 +64,11 @@ func (w *Watcher) Start(ctx context.Context) {
 	w.ctx = ctx
 	go w.watchConfig()
 	w.scanInitialFiles()
-
 	dw, err := fsnotify.NewWatcher()
 	if err != nil {
 		w.cfg.Logger.Error("Ошибка создания watcher для каталогов", zap.Error(err))
 	} else {
+		w.dirWatcher = dw
 		for _, dir := range w.cfg.Config.LogDirectoryMap {
 			filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 				if err == nil && info.IsDir() {
@@ -79,6 +79,11 @@ func (w *Watcher) Start(ctx context.Context) {
 		}
 		w.cfg.Logger.Info("Старт слежения за каталогами логов")
 		go w.handleDirEvents(dw)
+	}
+
+	for _, dir := range w.cfg.Config.LogDirectoryMap {
+		root := filepath.Dir(dir) // берём родителя
+		_ = dw.Add(root)          // подписываемся на него тоже
 	}
 
 	// Периодическое сохранение processed

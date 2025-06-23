@@ -1,13 +1,12 @@
 package clickhouseclient
 
 import (
+	"1CLogPumpClickHouse/internal/config"
+	"1CLogPumpClickHouse/internal/models"
+	"1CLogPumpClickHouse/internal/transform"
 	"context"
 	"fmt"
 	"time"
-
-	"1CLogPumpClickHouse/config"
-	"1CLogPumpClickHouse/models"
-	"1CLogPumpClickHouse/transform"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"go.uber.org/zap"
@@ -76,7 +75,7 @@ func (c *Client) InsertTechLogBatch(ctx context.Context, entries []models.LogEnt
 	// Отправляем отдельный батч для каждой таблицы
 	for tableName, group := range grouped {
 		// Используем отдельный контекст с таймаутом, чтобы отмена сервиса не прерывала операцию
-		dbCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		dbCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 
 		batch, err := c.conn.PrepareBatch(dbCtx,
 			"INSERT INTO "+tableName+" ("+
@@ -92,8 +91,8 @@ func (c *Client) InsertTechLogBatch(ctx context.Context, entries []models.LogEnt
 		for _, entry := range group {
 			row, err := transform.TransformLogEntry(entry)
 			if err != nil {
-				c.Logger.Error("transform", zap.Error(err), zap.Any("entry", entry))
-				return fmt.Errorf("transform: %w", err)
+				c.Logger.Warn("Некорректное время события, запись пропущена", zap.Error(err), zap.Any("entry", entry))
+				continue // пропускаем эту запись, не останавливая весь цикл
 			}
 			if err := batch.Append(
 				row.EventDate,
@@ -120,10 +119,11 @@ func (c *Client) InsertTechLogBatch(ctx context.Context, entries []models.LogEnt
 		}
 
 		if err := batch.Send(); err != nil {
-			cancel()
+			cancel() // отменяем контекст при ошибке
 			c.Logger.Error("send batch", zap.Error(err), zap.String("table", tableName))
 			return fmt.Errorf("send batch: %w", err)
 		}
+		cancel()
 	}
 	return nil
 }

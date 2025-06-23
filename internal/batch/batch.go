@@ -1,13 +1,12 @@
 package batch
 
 import (
+	"1CLogPumpClickHouse/internal/clickhouseclient"
+	"1CLogPumpClickHouse/internal/models"
 	"context"
 	"time"
 
 	"go.uber.org/zap"
-
-	"1CLogPumpClickHouse/clickhouseclient"
-	"1CLogPumpClickHouse/models"
 )
 
 // Batcher накапливает пачку логов и отправляет их в ClickHouse пачками
