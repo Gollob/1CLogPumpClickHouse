@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"go.uber.org/zap"
@@ -14,72 +13,74 @@ import (
 	"1CLogPumpClickHouse/config"
 	"1CLogPumpClickHouse/logger"
 	"1CLogPumpClickHouse/models"
+	"1CLogPumpClickHouse/storage"
 	"1CLogPumpClickHouse/watcher"
 )
 
 func main() {
-	// контекст для остановки
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// ловим сигналы завершения
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-
-	// инициализируем логгер
-	rootLogger := logger.InitZap()
-	lg := rootLogger.Named("main")
-	defer lg.Sync()
-	lg.Info("Сервис 1CLogPump стартует…")
-
-	// загружаем конфиг из YAML
+	// 1. Загрузка конфига
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
-		lg.Fatal("Ошибка загрузки config.yaml", zap.Error(err))
+		panic(err)
 	}
-	lg.Info("config.yaml успешно загружен")
 
-	// создаем клиента ClickHouse
-	clickhouseLogger := lg.Named("clickhouse")
-	chClient, err := clickhouseclient.New(cfg.ClickHouse, clickhouseLogger)
+	// 2. Инициализация логгера с Sentry
+	rootLogger, err := logger.InitZap(&cfg.Logging)
 	if err != nil {
-		lg.Fatal("Ошибка подключения к ClickHouse", zap.Error(err))
+		panic(err)
+	}
+	defer rootLogger.Sync()
+	rootLogger.Info("Сервис стартует…")
+
+	// 3. Выбор хранилища processed_files
+	var store storage.ProcessedStore
+	if cfg.ProcessedStorage == "redis" {
+		store = storage.NewRedisStore(&cfg.Redis, "processed_files")
+	} else {
+		store = storage.NewFileStore("processed_files.json")
+	}
+
+	// 4. Подключение к ClickHouse
+	chLogger := rootLogger.Named("clickhouse")
+	chClient, err := clickhouseclient.New(cfg.ClickHouse, chLogger)
+	if err != nil {
+		rootLogger.Fatal("Ошибка ClickHouse", zap.Error(err))
 	}
 	defer chClient.Close()
 
-	// канал для батчей
+	// 5. Канал для батчей
 	batchCh := make(chan models.LogEntry, cfg.BatchSize*2)
 
-	// настраиваем watcher
-	watcherLogger := lg.Named("watcher")
-	watcherCfg := watcher.Config{
+	// 6. Настройка Watcher
+	wCfg := watcher.Config{
 		Config:     cfg,
 		ConfigPath: "config.yaml",
-		Logger:     watcherLogger,
+		Logger:     rootLogger.Named("watcher"),
+		Store:      store,
 	}
-	w := watcher.New(watcherCfg, batchCh)
+	w := watcher.New(wCfg, batchCh)
 
-	// настраиваем батчер
-	batcherLogger := lg.Named("batcher")
-	batcher := batch.NewBatcher(cfg.BatchSize, cfg.BatchInterval, batcherLogger, chClient)
+	// 7. Настройка Batcher
+	// batch.NewBatcher(batchSize int, batchIntervalSeconds int, logger, client)
+	batcher := batch.NewBatcher(cfg.BatchSize, cfg.BatchInterval, rootLogger.Named("batcher"), chClient)
 
-	// запускаем Watcher и Batcher
-	var wg sync.WaitGroup
-	wg.Add(1)
+	// 8. Запуск и graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
 	go func() {
-		defer wg.Done()
 		w.Start(ctx)
 	}()
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
 		batcher.Run(ctx, batchCh)
 	}()
 
-	// ожидаем сигнала остановки
-	<-stop
-	lg.Info("Получен сигнал остановки, начинаем завершение работы")
+	<-sigCh
+	rootLogger.Info("Получен сигнал завершения, останавливаем…")
 	cancel()
-	wg.Wait()
-	lg.Info("Сервис завершил работу")
+	// по завершении watcher должен сам вызвать store.Save(...)
+	rootLogger.Info("Сервис завершён")
 }

@@ -21,3 +21,15 @@ ClickHouse:
 	TableMap:
 		Map1: "table_for_Map1"
 		Map2: "table_for_Map2"
+
+ProcessedStorage: "file"        # новая настройка: "file" или "redis"
+Redis:                          # параметры подключения к Redis
+	Host: "127.0.0.1"
+	Port: 6379
+	DB: 0
+	Password: ""                   # если требуется пароль
+
+Logging:                        # настройки логирования
+	LogFile: "error.log"
+	SentryDSN: ""
+	EnableSentry: true

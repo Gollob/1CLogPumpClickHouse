@@ -22,6 +22,21 @@ type ClickHouseConfig struct {
 	TableMap     map[string]string `yaml:"TableMap"`
 }
 
+// RedisConfig содержит настройки подключения к Redis
+type RedisConfig struct {
+	Host     string `yaml:"Host"`
+	Port     int    `yaml:"Port"`
+	DB       int    `yaml:"DB"`
+	Password string `yaml:"Password"`
+}
+
+// LoggingConfig содержит настройки логирования и интеграции с Sentry
+type LoggingConfig struct {
+	LogFile      string `yaml:"LogFile"`      // путь к файлу логов
+	SentryDSN    string `yaml:"SentryDSN"`    // DSN для Sentry
+	EnableSentry bool   `yaml:"EnableSentry"` // включить отправку ошибок в Sentry
+}
+
 // Config описывает основные настройки сервиса
 // LogDirectoryMap и FilePattern обязательны
 // BatchSize и BatchInterval должны быть положительными
@@ -34,7 +49,11 @@ type Config struct {
 	FilePattern     string            `yaml:"FilePattern"`
 	BatchSize       int               `yaml:"BatchSize"`
 	BatchInterval   int               `yaml:"BatchInterval"`
-	ClickHouse      ClickHouseConfig  `yaml:"ClickHouse"`
+
+	ClickHouse       ClickHouseConfig `yaml:"ClickHouse"`
+	ProcessedStorage string           `yaml:"ProcessedStorage"` // "file" или "redis"
+	Redis            RedisConfig      `yaml:"Redis"`
+	Logging          LoggingConfig    `yaml:"Logging"`
 }
 
 // LoadConfig читает и парсит конфиг из YAML-файла по указанному пути.

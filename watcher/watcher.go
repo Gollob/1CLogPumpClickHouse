@@ -1,15 +1,10 @@
 package watcher
 
 import (
-	"bufio"
+	"1CLogPumpClickHouse/storage"
 	"context"
-	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -19,7 +14,6 @@ import (
 
 	"1CLogPumpClickHouse/config"
 	"1CLogPumpClickHouse/models"
-	"1CLogPumpClickHouse/parser"
 )
 
 // Config — параметры watcher
@@ -34,10 +28,12 @@ type Config struct {
 	Config     *config.Config
 	ConfigPath string
 	Logger     *zap.Logger
+	Store      storage.ProcessedStore
 }
 
 type Watcher struct {
 	cfg       Config
+	store     storage.ProcessedStore
 	batchCh   chan<- models.LogEntry
 	files     map[string]*tail.Tail // активные tail'ы
 	processed map[string]int64      // path -> смещение
@@ -46,60 +42,21 @@ type Watcher struct {
 }
 
 // New создаёт Watcher и загружает состояние processed из JSONL
-func New(cfg Config, batchCh chan<- models.LogEntry) *Watcher {
-	w := &Watcher{
+func New(cfg Config, batchCh chan models.LogEntry) *Watcher {
+	// загружаем уже обработанные смещения
+	processed, err := cfg.Store.Load()
+	if err != nil {
+		cfg.Logger.Error("Не удалось загрузить processed_files", zap.Error(err))
+		processed = make(map[string]int64)
+	}
+
+	return &Watcher{
 		cfg:       cfg,
+		store:     cfg.Store,
 		batchCh:   batchCh,
-		files:     make(map[string]*tail.Tail),
-		processed: make(map[string]int64),
+		files:     make(map[string]*tail.Tail), // инициализируем map, чтобы avoid nil
+		processed: processed,                   // уже гарантированно non-nil
 	}
-	w.loadProcessed()
-	return w
-}
-
-// loadProcessed загружает processed metadata из JSONL файла: по одной записи на строку
-func (w *Watcher) loadProcessed() {
-	file, err := os.Open("processed_files.json")
-	if err != nil {
-		// Первый запуск или отсутствует файл
-		return
-	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var rec struct {
-			Path   string `json:"path"`
-			Offset int64  `json:"offset"`
-		}
-		err := json.Unmarshal(scanner.Bytes(), &rec)
-		if err == nil {
-			w.processed[rec.Path] = rec.Offset
-		}
-	}
-}
-
-// saveProcessed сохраняет processed metadata в JSONL файл: по одной записи на строку
-func (w *Watcher) saveProcessed() {
-	tmp := "processed_files.json.tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		w.cfg.Logger.Error("Не удалось создать временный processed file", zap.Error(err))
-		return
-	}
-	encoder := json.NewEncoder(file)
-	w.mu.RLock()
-	for path, off := range w.processed {
-		rec := struct {
-			Path   string `json:"path"`
-			Offset int64  `json:"offset"`
-		}{Path: path, Offset: off}
-		if err := encoder.Encode(&rec); err != nil {
-			w.cfg.Logger.Error("Не удалось сериализовать запись processed", zap.String("path", path), zap.Error(err))
-		}
-	}
-	w.mu.RUnlock()
-	file.Close()
-	os.Rename(tmp, "processed_files.json")
 }
 
 // Start запускает Watcher
@@ -133,235 +90,16 @@ func (w *Watcher) Start(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				w.saveProcessed()
+				if err := w.store.Save(w.processed); err != nil {
+					w.cfg.Logger.Error("Не удалось сохранить processed_files", zap.Error(err))
+				}
 			}
 		}
 	}()
 
 	<-ctx.Done()
 	w.cfg.Logger.Info("Watcher остановлен по сигналу shutdown")
-	w.saveProcessed()
-}
-
-// --- Добавим регулярное выражение для определения начала новой лог-записи ---
-var logRecordRegex = regexp.MustCompile(`\d{2}:\d{2}\.\d{2,}.*-.*`)
-
-// isNewLogRecord определяет начало новой записи по регулярному выражению
-func isNewLogRecord(s string) bool {
-	return logRecordRegex.MatchString(s)
-}
-
-// scanInitialFiles: если processed пуст — первый запуск, сканируем все файлы; иначе — только последний
-func (w *Watcher) scanInitialFiles() {
-	patternStr := w.cfg.Config.FilePattern
-	patternStr = strings.ReplaceAll(patternStr, ".", `\.`)
-	patternStr = strings.ReplaceAll(patternStr, "*", ".*")
-	patternStr = strings.ReplaceAll(patternStr, "?", ".")
-	pattern, err := regexp.Compile("^" + patternStr + "$")
-	if err != nil {
-		w.cfg.Logger.Error("Неверный FilePattern", zap.String("pattern", w.cfg.Config.FilePattern), zap.Error(err))
-		return
-	}
-
-	firstRun := len(w.processed) == 0
-
-	for _, dir := range w.cfg.Config.LogDirectoryMap {
-		var files []os.FileInfo
-		var paths []string
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			if pattern.MatchString(filepath.Base(path)) {
-				files = append(files, info)
-				paths = append(paths, path)
-			}
-			return nil
-		})
-		type fileWithTime struct {
-			Path string
-			Mod  time.Time
-		}
-		var sorted []fileWithTime
-		for i, fi := range files {
-			sorted = append(sorted, fileWithTime{Path: paths[i], Mod: fi.ModTime()})
-		}
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].Mod.Before(sorted[j].Mod)
-		})
-		for _, f := range sorted {
-			if _, already := w.processed[f.Path]; !already || firstRun {
-				w.cfg.Logger.Info("Запускаем tail для", zap.String("file", f.Path))
-				w.startTail(f.Path)
-			} else {
-				w.cfg.Logger.Debug("Пропускаем ранее обработанный файл", zap.String("file", f.Path))
-			}
-		}
-	}
-}
-
-// watchConfig следит за изменениями config.yaml
-func (w *Watcher) watchConfig() {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		w.cfg.Logger.Error("Не удалось создать watcher для конфига", zap.Error(err))
-		return
-	}
-	defer watcher.Close()
-	watcher.Add(w.cfg.ConfigPath)
-	for {
-		select {
-		case <-w.ctx.Done():
-			return
-		case ev := <-watcher.Events:
-			if ev.Op&(fsnotify.Write|fsnotify.Create) != 0 {
-				w.cfg.Logger.Info("Конфиг изменился, перечитываем", zap.String("path", w.cfg.ConfigPath))
-				newCfg, err := config.LoadConfig(w.cfg.ConfigPath)
-				if err != nil {
-					w.cfg.Logger.Error("Ошибка загрузки config.yaml", zap.Error(err))
-					continue
-				}
-				w.mu.Lock()
-				w.cfg.Config = newCfg
-				w.mu.Unlock()
-			}
-		case err := <-watcher.Errors:
-			w.cfg.Logger.Error("Ошибка watcher-а конфига", zap.Error(err))
-		}
-	}
-}
-
-// handleDirEvents обрабатывает fsnotify события в папках
-func (w *Watcher) handleDirEvents(dw *fsnotify.Watcher) {
-	for {
-		select {
-		case <-w.ctx.Done():
-			return
-		case ev := <-dw.Events:
-			if ev.Op&fsnotify.Create != 0 {
-				info, err := os.Stat(ev.Name)
-				if err == nil && info.IsDir() {
-					filepath.Walk(ev.Name, func(p string, i os.FileInfo, e error) error {
-						if e == nil && i.IsDir() {
-							dw.Add(p)
-						}
-						return nil
-					})
-					continue
-				}
-			}
-			if filepath.Ext(ev.Name) == ".log" {
-				if ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0 {
-					w.startTail(ev.Name)
-				}
-				if ev.Op&fsnotify.Remove != 0 {
-					w.stopTail(ev.Name)
-				}
-			}
-		case err := <-dw.Errors:
-			w.cfg.Logger.Error("Ошибка watcher для каталогов", zap.Error(err))
-		}
-	}
-}
-
-// startTail запускает tail для файла, начиная с сохранённого смещения
-func (w *Watcher) startTail(path string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if _, exists := w.files[path]; exists {
-		return
-	}
-	var loc tail.SeekInfo
-	if offset, ok := w.processed[path]; ok {
-		loc = tail.SeekInfo{Offset: offset, Whence: io.SeekStart}
-	} else {
-		loc = tail.SeekInfo{Offset: 0, Whence: io.SeekStart}
-	}
-	t, err := tail.TailFile(path, tail.Config{Follow: true, ReOpen: true, MustExist: false, Location: &loc, Logger: tail.DiscardingLogger})
-	if err != nil {
-		w.cfg.Logger.Error("Ошибка открытия tail", zap.String("file", path), zap.Error(err))
-		return
-	}
-	w.files[path] = t
-	w.cfg.Logger.Info("Запущен tail для файла", zap.String("file", path))
-	go w.readTail(path, t)
-}
-
-// stopTail останавливает tail и сохраняет processed
-func (w *Watcher) stopTail(path string) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if t, ok := w.files[path]; ok {
-		t.Stop()
-		delete(w.files, path)
-		w.saveProcessed()
-	}
-}
-
-// readTail читает строки, парсит записи и обновляет offset
-func (w *Watcher) readTail(path string, t *tail.Tail) {
-	defer func() {
-		if r := recover(); r != nil {
-			w.cfg.Logger.Error("Паника в readTail восстановлена", zap.Any("error", r))
-		}
-	}()
-	var buffer []string
-	var timer *time.Timer
-
-	resetTimer := func() {
-		if timer != nil {
-			timer.Stop()
-		}
-		timer = time.NewTimer(2 * time.Second)
-	}
-
-	flushBuffer := func() {
-		if len(buffer) == 0 {
-			return
-		}
-		entry, err := parser.ParseLine(buffer)
-		if err != nil {
-			w.cfg.Logger.Warn("Ошибка парсинга лога", zap.String("file", path), zap.Error(err))
-			buffer = buffer[:0]
-			return
-		}
-		entry.Timestamp = filepath.Base(path)
-		w.batchCh <- entry
-		off, err := t.Tell()
-		if err == nil {
-			w.mu.Lock()
-			w.processed[path] = off
-			w.mu.Unlock()
-		}
-		buffer = buffer[:0]
-	}
-
-	for {
-		select {
-		case <-w.ctx.Done():
-			flushBuffer()
-			return
-		case line, ok := <-t.Lines:
-			if !ok {
-				flushBuffer()
-				return
-			}
-			clean := strings.ReplaceAll(line.Text, "\x00", "")
-			if strings.Contains(line.Text, "\x00") {
-				w.cfg.Logger.Warn("Обнаружены нулевые байты в строке", zap.String("file", path))
-			}
-			if isNewLogRecord(clean) {
-				flushBuffer()
-			}
-			buffer = append(buffer, clean)
-			resetTimer()
-		case <-func() <-chan time.Time {
-			if timer != nil {
-				return timer.C
-			}
-			return make(chan time.Time)
-		}():
-			flushBuffer()
-		}
+	if err := w.store.Save(w.processed); err != nil {
+		w.cfg.Logger.Error("Не удалось сохранить processed_files", zap.Error(err))
 	}
 }
