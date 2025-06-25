@@ -9,11 +9,10 @@ import (
 	"1CLogPumpClickHouse/internal/storage"
 	"1CLogPumpClickHouse/internal/watcher"
 	"context"
+	"go.uber.org/zap"
 	"os"
 	"os/signal"
 	"syscall"
-
-	"go.uber.org/zap"
 )
 
 func main() {

@@ -3,8 +3,12 @@ LogDirectoryMap:
   Map1: "E:/Go_project/logtest/test"
   Map2: "E:/Go_project/logtest/test2"
 
+# Интевал сканирования папок
+RescanInterval: 20
+
 # Маска лог-файлов
 FilePattern: "*.log"
+
 
 # Настройки пакетной отправки
 BatchSize: 100
@@ -33,3 +37,5 @@ Logging: # настройки логирования
   LogFile: "temp/error.log"
   SentryDSN: "https://6dab19304716628f65706d1b365c0cbb@sentry.vozovoz.ru/37"
   EnableSentry: true
+  ConsoleLevel: "warn"
+  Level: "warn" #  минимальный уровень для записи в файл/Sentry (debug, info, warn, error)

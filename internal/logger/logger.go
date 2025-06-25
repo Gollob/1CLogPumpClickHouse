@@ -55,9 +55,14 @@ func InitZap(cfg *config.LoggingConfig) (*zap.Logger, error) {
 	consoleWS := zapcore.AddSync(os.Stdout)
 
 	// 5) Определяем уровни
-	consoleLevel := zapcore.DebugLevel // всё, от Debug и выше
-	fileLevel := zapcore.ErrorLevel    // только Error и выше
-
+	fileLevel, err := zapcore.ParseLevel(cfg.Level)
+	if err != nil {
+		return nil, fmt.Errorf("не верный уровень логирования для файла: %w", err)
+	}
+	consoleLevel, err := zapcore.ParseLevel(cfg.ConsoleLevel)
+	if err != nil {
+		return nil, fmt.Errorf("не верный уровень логирования для консоли: %w", err)
+	}
 	// 6) Создаём ядра
 	cores := []zapcore.Core{
 		// консольное ядро

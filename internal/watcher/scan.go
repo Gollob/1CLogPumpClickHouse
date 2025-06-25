@@ -20,60 +20,6 @@ func isNewLogRecord(s string) bool {
 	return logRecordRegex.MatchString(s)
 }
 
-// scanInitialFiles: если processed пуст — первый запуск, сканируем все файлы; иначе — только последний
-func (w *Watcher) scanInitialFiles() {
-	patternStr := w.cfg.Config.FilePattern
-	patternStr = strings.ReplaceAll(patternStr, ".", `\.`)
-	patternStr = strings.ReplaceAll(patternStr, "*", ".*")
-	patternStr = strings.ReplaceAll(patternStr, "?", ".")
-	pattern, err := regexp.Compile("^" + patternStr + "$")
-	if err != nil {
-		w.cfg.Logger.Error("Неверный FilePattern", zap.String("pattern", w.cfg.Config.FilePattern), zap.Error(err))
-		return
-	}
-
-	w.mu.RLock()
-	firstRun := len(w.processed) == 0
-	w.mu.RUnlock()
-
-	for _, dir := range w.cfg.Config.LogDirectoryMap {
-		var files []os.FileInfo
-		var paths []string
-		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil
-			}
-			if pattern.MatchString(filepath.Base(path)) {
-				files = append(files, info)
-				paths = append(paths, path)
-			}
-			return nil
-		})
-		type fileWithTime struct {
-			Path string
-			Mod  time.Time
-		}
-		var sorted []fileWithTime
-		for i, fi := range files {
-			sorted = append(sorted, fileWithTime{Path: paths[i], Mod: fi.ModTime()})
-		}
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].Mod.Before(sorted[j].Mod)
-		})
-		for _, f := range sorted {
-			w.mu.RLock()
-			_, already := w.processed[f.Path]
-			w.mu.RUnlock()
-			if !already || firstRun {
-				w.cfg.Logger.Info("Запускаем tail для", zap.String("file", f.Path))
-				w.startTail(f.Path)
-			} else {
-				w.cfg.Logger.Debug("Пропускаем ранее обработанный файл", zap.String("file", f.Path))
-			}
-		}
-	}
-}
-
 // watchConfig следит за изменениями config.yaml
 func (w *Watcher) watchConfig() {
 	watcher, err := fsnotify.NewWatcher()
@@ -161,6 +107,60 @@ func (w *Watcher) handleDirEvents(dw *fsnotify.Watcher) {
 			}
 		case err := <-dw.Errors:
 			w.cfg.Logger.Error("Ошибка watcher для каталогов", zap.Error(err))
+		}
+	}
+}
+
+// scanInitialFiles: если processed пуст — первый запуск, сканируем все файлы; иначе — только последний
+func (w *Watcher) ScanInitialFiles() {
+	patternStr := w.cfg.Config.FilePattern
+	patternStr = strings.ReplaceAll(patternStr, ".", `\.`)
+	patternStr = strings.ReplaceAll(patternStr, "*", ".*")
+	patternStr = strings.ReplaceAll(patternStr, "?", ".")
+	pattern, err := regexp.Compile("^" + patternStr + "$")
+	if err != nil {
+		w.cfg.Logger.Error("Неверный FilePattern", zap.String("pattern", w.cfg.Config.FilePattern), zap.Error(err))
+		return
+	}
+
+	w.mu.RLock()
+	firstRun := len(w.processed) == 0
+	w.mu.RUnlock()
+
+	for _, dir := range w.cfg.Config.LogDirectoryMap {
+		var files []os.FileInfo
+		var paths []string
+		filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil
+			}
+			if pattern.MatchString(filepath.Base(path)) {
+				files = append(files, info)
+				paths = append(paths, path)
+			}
+			return nil
+		})
+		type fileWithTime struct {
+			Path string
+			Mod  time.Time
+		}
+		var sorted []fileWithTime
+		for i, fi := range files {
+			sorted = append(sorted, fileWithTime{Path: paths[i], Mod: fi.ModTime()})
+		}
+		sort.Slice(sorted, func(i, j int) bool {
+			return sorted[i].Mod.Before(sorted[j].Mod)
+		})
+		for _, f := range sorted {
+			w.mu.RLock()
+			_, already := w.processed[f.Path]
+			w.mu.RUnlock()
+			if !already || firstRun {
+				w.cfg.Logger.Info("Запускаем tail для", zap.String("file", f.Path))
+				w.startTail(f.Path)
+			} else {
+				w.cfg.Logger.Debug("Пропускаем ранее обработанный файл", zap.String("file", f.Path))
+			}
 		}
 	}
 }

@@ -1,10 +1,7 @@
 package config
 
 import (
-	"bytes"
 	"fmt"
-	"gopkg.in/yaml.v2"
-	"os"
 )
 
 // ClickHouseConfig содержит настройки подключения и маппинг таблиц по компонентам
@@ -34,6 +31,8 @@ type LoggingConfig struct {
 	LogFile      string `yaml:"LogFile"`      // путь к файлу логов
 	SentryDSN    string `yaml:"SentryDSN"`    // DSN для Sentry
 	EnableSentry bool   `yaml:"EnableSentry"` // включить отправку ошибок в Sentry
+	Level        string `yaml:"Level"`        // минимальный уровень для записи в файл (debug, info, warn, error)
+	ConsoleLevel string `yaml:"ConsoleLevel"` // минимальный уровень для вывода в консоль
 }
 
 // Config описывает основные настройки сервиса
@@ -44,15 +43,15 @@ type LoggingConfig struct {
 // Пример конфигурации см. README.md
 
 type Config struct {
-	LogDirectoryMap map[string]string `yaml:"LogDirectoryMap"`
-	FilePattern     string            `yaml:"FilePattern"`
-	BatchSize       int               `yaml:"BatchSize"`
-	BatchInterval   int               `yaml:"BatchInterval"`
-
-	ClickHouse       ClickHouseConfig `yaml:"ClickHouse"`
-	ProcessedStorage string           `yaml:"ProcessedStorage"` // "file" или "redis"
-	Redis            RedisConfig      `yaml:"Redis"`
-	Logging          LoggingConfig    `yaml:"Logging"`
+	LogDirectoryMap  map[string]string `yaml:"LogDirectoryMap"`
+	FilePattern      string            `yaml:"FilePattern"`
+	BatchSize        int               `yaml:"BatchSize"`
+	BatchInterval    int               `yaml:"BatchInterval"`
+	RescanInterval   int               `yaml:"RescanInterval"` // повторный обход директорий (секунд)
+	ClickHouse       ClickHouseConfig  `yaml:"ClickHouse"`
+	ProcessedStorage string            `yaml:"ProcessedStorage"` // "file" или "redis"
+	Redis            RedisConfig       `yaml:"Redis"`
+	Logging          LoggingConfig     `yaml:"Logging"`
 }
 
 // LoadConfig читает и парсит конфиг из YAML-файла по указанному пути.
@@ -82,54 +81,4 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, fmt.Errorf("validate config: %w", err)
 	}
 	return cfg, nil
-}
-
-// readFile читает все байты из файла по пути
-func readFile(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return data, nil
-}
-
-// sanitize удаляет BOM и табуляции
-func sanitize(data []byte) []byte {
-	// Удаляем UTF-8 BOM
-	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
-	// Заменяем табы на два пробела
-	data = bytes.ReplaceAll(data, []byte("\t"), []byte("  "))
-	return data
-}
-
-// parseYAML парсит YAML-данные в структуру Config
-func parseYAML(data []byte) (*Config, error) {
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-	return &cfg, nil
-}
-
-// Validate проверяет обязательные поля конфигурации
-func (c *Config) Validate() error {
-	if len(c.LogDirectoryMap) == 0 {
-		return fmt.Errorf("LogDirectoryMap must not be empty")
-	}
-	if c.FilePattern == "" {
-		return fmt.Errorf("FilePattern must not be empty")
-	}
-	if c.BatchSize <= 0 {
-		return fmt.Errorf("BatchSize must be positive")
-	}
-	if c.BatchInterval <= 0 {
-		return fmt.Errorf("BatchInterval must be positive")
-	}
-	if c.ClickHouse.Address == "" {
-		return fmt.Errorf("ClickHouse.Address must not be empty")
-	}
-	if c.ClickHouse.Database == "" {
-		return fmt.Errorf("ClickHouse.Database must not be empty")
-	}
-	return nil
 }
