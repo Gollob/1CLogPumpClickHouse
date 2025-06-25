@@ -1,7 +1,7 @@
 # Путь к папкам с логами
 LogDirectoryMap:
-	Map1: "E:/Go_project/logtest/test"
-	Map2: "E:/Go_project/logtest/test2"
+  Map1: "E:/Go_project/logtest/test"
+  Map2: "E:/Go_project/logtest/test2"
 
 # Маска лог-файлов
 FilePattern: "*.log"
@@ -12,24 +12,24 @@ BatchInterval: 20
 
 # Конфигурация ClickHouse
 ClickHouse:
-	Address:       "localhost:9000"
-	Username:      "admin"
-	Password:      "admin"
-	Database:      "logs_db"
-	DefaultTable:  "logs"
-	Protocol:      "tcp"
-	TableMap:
-		Map1: "table_for_Map1"
-		Map2: "table_for_Map2"
+  Address: "localhost:9000"
+  Username: "admin"
+  Password: "admin"
+  Database: "logs_db"
+  DefaultTable: "logs"
+  Protocol: "tcp"
+  TableMap:
+    Map1: "table_for_Map1"
+    Map2: "table_for_Map2"
 
-ProcessedStorage: "file"        # новая настройка: "file" или "redis"
-Redis:                          # параметры подключения к Redis
-	Host: "127.0.0.1"
-	Port: 6379
-	DB: 0
-	Password: ""                   # если требуется пароль
+ProcessedStorage: "redis"        # новая настройка: "file" или "redis"
+Redis: # параметры подключения к Redis
+  Host: "localhost"
+  Port: 32768
+  DB: 0
+  Password: ""                   # если требуется пароль
 
-Logging:                        # настройки логирования
-	LogFile: "temp/error.log"
-	SentryDSN: ""
-	EnableSentry: true
+Logging: # настройки логирования
+  LogFile: "temp/error.log"
+  SentryDSN: "https://6dab19304716628f65706d1b365c0cbb@sentry.vozovoz.ru/37"
+  EnableSentry: true

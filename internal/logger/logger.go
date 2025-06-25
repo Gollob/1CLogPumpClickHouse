@@ -3,13 +3,12 @@ package logger
 import (
 	"1CLogPumpClickHouse/internal/config"
 	"fmt"
-	"os"
-	"path/filepath"
-	"time"
-
 	"github.com/getsentry/sentry-go"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"os"
+	"path/filepath"
+	"time"
 )
 
 // InitZap инициализирует zap-логгер:

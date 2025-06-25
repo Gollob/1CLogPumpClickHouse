@@ -3,9 +3,8 @@ package config
 import (
 	"bytes"
 	"fmt"
-	"os"
-
 	"gopkg.in/yaml.v2"
+	"os"
 )
 
 // ClickHouseConfig содержит настройки подключения и маппинг таблиц по компонентам

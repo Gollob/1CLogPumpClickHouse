@@ -6,10 +6,9 @@ import (
 	"1CLogPumpClickHouse/internal/transform"
 	"context"
 	"fmt"
-	"time"
-
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"go.uber.org/zap"
+	"time"
 )
 
 // Config — структура для подключения к ClickHouse
