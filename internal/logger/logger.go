@@ -14,7 +14,7 @@ import (
 // InitZap инициализирует zap-логгер:
 // - в консоль выводятся все сообщения (Debug+);
 // - в файл — только ошибки (Error+);
-// - при EnableSentry отправляет Error+ в Sentry.
+// - при EnableSentry отправляет сообщения указанного уровня (SentryLevel+) в Sentry.
 func InitZap(cfg *config.LoggingConfig) (*zap.Logger, error) {
 	// 1) Создаём директорию для лог-файла
 	if cfg.LogFile != "" {
@@ -54,15 +54,23 @@ func InitZap(cfg *config.LoggingConfig) (*zap.Logger, error) {
 	// 4) WriteSyncer для консоли
 	consoleWS := zapcore.AddSync(os.Stdout)
 
-	// 5) Определяем уровни
+	// 5) Определяем уровни логирования
 	fileLevel, err := zapcore.ParseLevel(cfg.Level)
 	if err != nil {
-		return nil, fmt.Errorf("не верный уровень логирования для файла: %w", err)
+		return nil, fmt.Errorf("неверный уровень логирования для файла: %w", err)
 	}
 	consoleLevel, err := zapcore.ParseLevel(cfg.ConsoleLevel)
 	if err != nil {
-		return nil, fmt.Errorf("не верный уровень логирования для консоли: %w", err)
+		return nil, fmt.Errorf("неверный уровень логирования для консоли: %w", err)
 	}
+	sentryLevel := zapcore.ErrorLevel // По умолчанию Error+
+	if cfg.SentryLevel != "" {
+		sentryLevel, err = zapcore.ParseLevel(cfg.SentryLevel)
+		if err != nil {
+			return nil, fmt.Errorf("неверный уровень логирования для Sentry: %w", err)
+		}
+	}
+
 	// 6) Создаём ядра
 	cores := []zapcore.Core{
 		// консольное ядро
@@ -88,14 +96,38 @@ func InitZap(cfg *config.LoggingConfig) (*zap.Logger, error) {
 		zap.AddStacktrace(fileLevel),
 	)
 
-	// 8) Интеграция с Sentry (Error+)
+	// 8) Интеграция с Sentry
 	if cfg.EnableSentry && cfg.SentryDSN != "" {
-		if err := sentry.Init(sentry.ClientOptions{Dsn: cfg.SentryDSN}); err != nil {
-			fmt.Fprintf(os.Stderr, "Sentry init failed: %v\n", err)
+		if err := sentry.Init(sentry.ClientOptions{
+			Dsn:              cfg.SentryDSN,
+			Environment:      cfg.Environment, // Add environment from config
+			Release:          cfg.Release,     // Add release version from config
+			EnableTracing:    true,            // Enable performance tracing
+			TracesSampleRate: 0.2,             // Sample 20% of traces
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "Sentry initialization failed: %v\n", err)
 		} else {
 			logger = logger.WithOptions(zap.Hooks(func(entry zapcore.Entry) error {
-				if entry.Level >= zapcore.ErrorLevel {
-					sentry.CaptureMessage(fmt.Sprintf("%s:%d — %s", entry.Caller.File, entry.Caller.Line, entry.Message))
+				if entry.Level >= sentryLevel {
+					// Create Sentry event with enriched context
+					event := &sentry.Event{
+						Message:     entry.Message,
+						Level:       sentryLevelToSentry(entry.Level),
+						Timestamp:   time.Now(),
+						Environment: cfg.Environment,
+						Release:     cfg.Release,
+						Extra: map[string]interface{}{
+							"caller":      entry.Caller.String(),
+							"stacktrace":  entry.Stack,
+							"logger_name": entry.LoggerName,
+						},
+						Tags: map[string]string{
+							"service": cfg.ServiceName, // Add service name from config
+							"level":   entry.Level.String(),
+						},
+					}
+					// Capture event and flush
+					sentry.CaptureEvent(event)
 					sentry.Flush(2 * time.Second)
 				}
 				return nil
@@ -104,4 +136,22 @@ func InitZap(cfg *config.LoggingConfig) (*zap.Logger, error) {
 	}
 
 	return logger, nil
+}
+
+// sentryLevelToSentry преобразует уровень логирования Zap в уровень Sentry
+func sentryLevelToSentry(level zapcore.Level) sentry.Level {
+	switch level {
+	case zapcore.DebugLevel:
+		return sentry.LevelDebug
+	case zapcore.InfoLevel:
+		return sentry.LevelInfo
+	case zapcore.WarnLevel:
+		return sentry.LevelWarning
+	case zapcore.ErrorLevel:
+		return sentry.LevelError
+	case zapcore.DPanicLevel, zapcore.PanicLevel, zapcore.FatalLevel:
+		return sentry.LevelFatal
+	default:
+		return sentry.LevelInfo
+	}
 }

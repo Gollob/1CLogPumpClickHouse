@@ -35,7 +35,11 @@ Redis: # параметры подключения к Redis
 
 Logging: # настройки логирования
   LogFile: "temp/error.log"
-  SentryDSN: "https://6dab19304716628f65706d1b365c0cbb@sentry.vozovoz.ru/37"
+  SentryDSN: ""
   EnableSentry: true
-  ConsoleLevel: "warn"
-  Level: "warn" #  минимальный уровень для записи в файл/Sentry (debug, info, warn, error)
+  ConsoleLevel: "info"
+  Level: "info" #  минимальный уровень для записи в файл/Sentry (debug, info, warn, error)
+  SentryLevel: "warn"
+  Environment: "production"
+  Release: "v0.0.1"
+  ServiceName: "log-pump"

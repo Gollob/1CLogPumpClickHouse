@@ -7,9 +7,10 @@ require (
 	github.com/fsnotify/fsnotify v1.9.0
 	github.com/getsentry/sentry-go v0.34.0
 	github.com/hpcloud/tail v1.0.0
+	github.com/kardianos/service v1.2.2
 	github.com/redis/go-redis/v9 v9.10.0
 	go.uber.org/zap v1.27.0
-	gopkg.in/yaml.v2 v2.4.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -32,5 +33,4 @@ require (
 	golang.org/x/text v0.26.0 // indirect
 	gopkg.in/fsnotify.v1 v1.4.7 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

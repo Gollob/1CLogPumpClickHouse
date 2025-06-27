@@ -28,11 +28,15 @@ type RedisConfig struct {
 
 // LoggingConfig содержит настройки логирования и интеграции с Sentry
 type LoggingConfig struct {
-	LogFile      string `yaml:"LogFile"`      // путь к файлу логов
-	SentryDSN    string `yaml:"SentryDSN"`    // DSN для Sentry
-	EnableSentry bool   `yaml:"EnableSentry"` // включить отправку ошибок в Sentry
-	Level        string `yaml:"Level"`        // минимальный уровень для записи в файл (debug, info, warn, error)
-	ConsoleLevel string `yaml:"ConsoleLevel"` // минимальный уровень для вывода в консоль
+	LogFile      string `yaml:"LogFile"`      // Path to log file
+	SentryDSN    string `yaml:"SentryDSN"`    // DSN for Sentry
+	EnableSentry bool   `yaml:"EnableSentry"` // Enable sending errors to Sentry
+	Level        string `yaml:"Level"`        // Minimum level for file logging (debug, info, warn, error)
+	ConsoleLevel string `yaml:"ConsoleLevel"` // Minimum level for console output
+	SentryLevel  string `yaml:"SentryLevel"`  // Minimum level for Sentry (debug, info, warn, error)
+	Environment  string `yaml:"Environment"`  // Environment for Sentry (e.g., production, staging)
+	Release      string `yaml:"Release"`      // Release version for Sentry
+	ServiceName  string `yaml:"ServiceName"`  // Service name for Sentry
 }
 
 // Config описывает основные настройки сервиса
