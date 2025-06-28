@@ -34,7 +34,7 @@ func (p *program) Start(s service.Service) error {
 }
 
 func (p *program) run() {
-	//fixWorkingDir()
+	fixWorkingDir()
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {
 		panic(err)

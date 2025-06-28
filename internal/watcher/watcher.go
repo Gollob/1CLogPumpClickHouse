@@ -55,7 +55,7 @@ func New(cfg Config, batchCh chan models.LogEntry) *Watcher {
 func (w *Watcher) addWatchers(dir string, dw *fsnotify.Watcher) error {
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			w.cfg.Logger.Warn("Ошибка при обходе директории", zap.String("path", path), zap.Error(err))
+			w.cfg.Logger.Debug("Ошибка при обходе директории", zap.String("path", path), zap.Error(err))
 			return nil
 		}
 		if info.IsDir() {
@@ -106,10 +106,10 @@ func (w *Watcher) Start(ctx context.Context) error {
 	for _, dir := range w.cfg.Config.LogDirectoryMap {
 		root := filepath.Dir(dir)
 		if err := w.addWatchers(root, dw); err != nil {
-			w.cfg.Logger.Warn("Ошибка при добавлении наблюдателей", zap.String("dir", root), zap.Error(err))
+			w.cfg.Logger.Debug("Ошибка при добавлении наблюдателей", zap.String("dir", root), zap.Error(err))
 		}
 		if err := w.addWatchers(dir, dw); err != nil {
-			w.cfg.Logger.Warn("Ошибка при добавлении наблюдателей", zap.String("dir", dir), zap.Error(err))
+			w.cfg.Logger.Debug("Ошибка при добавлении наблюдателей", zap.String("dir", dir), zap.Error(err))
 		}
 	}
 
